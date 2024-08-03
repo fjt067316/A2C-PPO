@@ -25,7 +25,10 @@ class PolicyNetwork(nn.Module):
         self.fc = nn.Sequential(
             nn.Linear(state_dim, 128),
             nn.ReLU(),
-            nn.Linear(128, action_dim)
+            nn.Linear(128, 64),
+            nn.ReLU(),
+            nn.Linear(64, action_dim)
+
         )
     
     def forward(self, x):
@@ -38,7 +41,9 @@ class ValueNetwork(nn.Module):
         self.fc = nn.Sequential(
             nn.Linear(state_dim, 128),
             nn.ReLU(),
-            nn.Linear(128, 1)
+            nn.Linear(128, 64),
+            nn.ReLU(),
+            nn.Linear(64, 1)
         )
     
     def forward(self, x):
@@ -46,12 +51,11 @@ class ValueNetwork(nn.Module):
 
 
 import torch
-from torch.distributions import Normal
 
 class A2C:
     """A2C (Advantage Actor-Critic) algorithm for continuous action spaces"""
     
-    def __init__(self, obs_space_dims: int, action_space_dims: int, lr: float = 1e-3, gamma: float = 0.99):
+    def __init__(self, obs_space_dims: int, action_space_dims: int, lr: float = 5e-4, gamma: float = 0.97):
         self.gamma = gamma
         self.action_dim = action_space_dims
         self.policy_net = PolicyNetwork(obs_space_dims, action_space_dims)
@@ -87,9 +91,13 @@ class A2C:
         # Compute Q values (returns)
         running_g = 0
         gs = []
+        rewards = np.array(self.rewards)
+        # mean = rewards.mean()
+        # std = rewards.std()
+        # rewards = (rewards - mean) / std
 
         # Discounted return (backwards) - [::-1] will return an array in reverse
-        for R in self.rewards[::-1]:
+        for R in rewards[::-1]:
             running_g = R + self.gamma * running_g
             gs.insert(0, running_g)
 
@@ -99,20 +107,26 @@ class A2C:
         log_probs = torch.cat(self.log_probs)
 
         # Compute advantages
+        # advantages = [gs[i] + values[i+1]*self.gamma - values[i] for i in range(len(gs)-1)]
+        # advantages.append(gs[-1]-values[-1])
+        # advantages = torch.tensor(advantages)
         advantages = gs - values
+        advantages = (advantages - advantages.mean()) / (advantages.std()+ 1e-10)
 
         # Compute losses
         policy_loss = - (log_probs * advantages.detach()).mean()
-        value_loss = F.smooth_l1_loss(values, gs)
+        value_loss = torch.mean((gs-values)**2)                     #F.smooth_l1_loss(values, gs)
 
         # Update policy network
         self.policy_optimizer.zero_grad()
         policy_loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), 1)
         self.policy_optimizer.step()
 
         # Update value network
         self.value_optimizer.zero_grad()
         value_loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.value_net.parameters(), 1)
         self.value_optimizer.step()
 
         # Clear episode data
@@ -123,11 +137,6 @@ class A2C:
         self.log_probs = []
 
 
-
-# Create and wrap the environment
-# env = gym.make("InvertedPendulum-v4")
-# env_human = gym.make("InvertedPendulum-v4", render_mode="human")
-# title = "invertedpendulum-v4"
 '''
 Lunar Lander Discrete
 '''
@@ -149,7 +158,7 @@ wrapped_env_human = gym.wrappers.RecordEpisodeStatistics(env_human, 50)  # Recor
 # TODO ; implement SB3 solvers
 
 
-total_num_episodes = int(1000) #5e3 # Total number of episodes
+total_num_episodes = int(1_000) #5e3 # Total number of episodes
 printEveryNEps = 100 #50 
 showViewHuman = True
 viewEveryNEps = 200 # lander 500 # penduluam 200 #humanoid ??
@@ -161,7 +170,7 @@ rewards_over_seeds = []
 
 # seed_list = [1, 2, 3, 5, 8] # Fibonacci seeds
 # see 7 seems easier to start with
-seed_list = [7,5, 8, 9, 13] 
+seed_list = [7]#,5, 8, 9, 13] 
 # seed_list = [7,5] 
 
 for s, seed in enumerate(seed_list):
@@ -184,7 +193,7 @@ for s, seed in enumerate(seed_list):
         obs, info = wrapped_env.reset(seed=seed)
 
         done = False
-
+        episode_rewards = []
         while not done:
             # Collect current state and action
             action = agent.sample_action(obs)
